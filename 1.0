@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Advanced RSVP Speed Reader</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/epub.js/0.3.88/epub.min.js"></script>
+    <style>
+        :root {
+            --bg: #fdfdfd;
+            --accent: #e74c3c;
+            --panel: #ffffff;
+            --text: #333;
+        }
+        body { 
+            font-family: 'Courier New', Courier, monospace; 
+            background: var(--bg); 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            min-height: 100vh; 
+            margin: 0; 
+            padding: 20px; 
+            color: var(--text);
+        }
+        
+        /* Reader UI */
+        #reader-box {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+            height: 220px;
+            background: var(--panel);
+            border-radius: 20px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 52px;
+            font-weight: 800;
+            margin-bottom: 30px;
+            border: 1px solid #eee;
+        }
+
+        .guide { position: absolute; left: 50%; transform: translateX(-50%); width: 2px; height: 35px; background: #ddd; }
+        .top { top: 0; } .bottom { bottom: 0; }
+
+        #word-wrap { display: flex; width: 100%; }
+        .pre { flex: 1; text-align: right; }
+        .foc { width: 1ch; color: var(--accent); text-align: center; flex: 0 0 auto; }
+        .suf { flex: 1; text-align: left; }
+
+        /* Control Panel */
+        .ui-panel { 
+            width: 100%; 
+            max-width: 600px; 
+            background: white; 
+            padding: 20px; 
+            border-radius: 15px; 
+            box-shadow: 0 5px 15px rgba(0,0,0,0.05); 
+        }
+        .stats { 
+            font-family: sans-serif; 
+            font-size: 14px; 
+            color: #666; 
+            margin-bottom: 15px; 
+            display: flex; 
+            justify-content: space-between; 
+        }
+        
+        input[type="file"] { margin-bottom: 20px; font-family: sans-serif; }
+        .btns { display: flex; gap: 10px; margin-top: 15px; }
+        
+        button { 
+            flex: 1; 
+            padding: 12px; 
+            border: none; 
+            border-radius: 8px; 
+            cursor: pointer; 
+            font-weight: bold; 
+            transition: 0.2s; 
+            font-family: sans-serif;
+        }
+        .btn-play { background: #27ae60; color: white; }
+        .btn-play:hover { background: #219150; }
+        .btn-stop { background: #ecf0f1; color: #333; }
+        .btn-stop:hover { background: #d5dbdb; }
+        
+        .progress-bar { width: 100%; height: 8px; background: #eee; border-radius: 4px; margin-top: 20px; overflow: hidden; }
+        #progress-inner { width: 0%; height: 100%; background: var(--accent); transition: 0.3s; }
+        
+        label { font-family: sans-serif; font-size: 14px; display: block; margin-bottom: 5px; }
+    </style>
+</head>
+<body>
+
+    <div id="reader-box">
+        <div class="guide top"></div>
+        <div id="word-wrap">
+            <div id="pre" class="pre"></div>
+            <div id="foc" class="foc"></div>
+            <div id="suf" class="suf"></div>
+        </div>
+        <div class="guide bottom"></div>
+    </div>
+
+    <div class="ui-panel">
+        <div class="stats">
+            <span id="book-title">Please load an e-book...</span>
+            <span id="pos-info">0 / 0</span>
+        </div>
+        
+        <input type="file" id="file-input" accept=".epub">
+        
+        <label>Reading Speed: <b id="wpm-val">350</b> WPM</label>
+        <input type="range" id="speed" min="200" max="1000" step="50" value="350" style="width:100%">
+
+        <div class="btns">
+            <button class="btn-play" id="start">START / PAUSE</button>
+            <button class="btn-stop" id="reset">RESET</button>
+        </div>
+
+        <div class="progress-bar"><div id="progress-inner"></div></div>
+    </div>
+
+    <script>
+        let words = [];
+        let currentIdx = 0;
+        let isPlaying = false;
+        let timer = null;
+        let dbKey = "rsvp_reader_pos";
+
+        const pre = document.getElementById('pre');
+        const foc = document.getElementById('foc');
+        const suf = document.getElementById('suf');
+        const fileInput = document.getElementById('file-input');
+        const progress = document.getElementById('progress-inner');
+        const posInfo = document.getElementById('pos-info');
+        const wpmVal = document.getElementById('wpm-val');
+        const speedSlider = document.getElementById('speed');
+        const startBtn = document.getElementById('start');
+
+        // EPUB Processing
+        fileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const book = ePub(event.target.result);
+                document.getElementById('book-title').innerText = file.name;
+                
+                book.ready.then(() => {
+                    return book.locations.generate(1000);
+                }).then(() => {
+                    let promises = [];
+                    book.spine.each(item => {
+                        promises.push(item.load(book.load.bind(book)).then(doc => {
+                            return doc.body.innerText;
+                        }));
+                    });
+
+                    Promise.all(promises).then(contents => {
+                        const fullText = contents.join(" ");
+                        // Clean text and split into words
+                        words = fullText.trim().split(/\s+/).filter(w => w.length > 0);
+                        
+                        // Check for saved bookmark
+                        const saved = localStorage.getItem(dbKey + "_" + file.name);
+                        currentIdx = saved ? parseInt(saved) : 0;
+                        
+                        updateDisplay();
+                    });
+                });
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        function getFocusIndex(len) {
+            if (len < 2) return 0;
+            if (len < 6) return 1;
+            if (len < 10) return 2;
+            if (len < 14) return 3;
+            return 4;
+        }
+
+        function updateDisplay() {
+            if (currentIdx >= words.length) return;
+            const word = words[currentIdx];
+            const f = getFocusIndex(word.length);
+            
+            pre.textContent = word.substring(0, f);
+            foc.textContent = word.substring(f, f + 1);
+            suf.textContent = word.substring(f + 1);
+
+            // Update Progress UI
+            const p = (currentIdx / words.length) * 100;
+            progress.style.width = p + "%";
+            posInfo.textContent = `${currentIdx.toLocaleString()} / ${words.length.toLocaleString()}`;
+            
+            // Save current position (Bookmark)
+            const fileName = fileInput.files[0]?.name;
+            if (fileName) localStorage.setItem(dbKey + "_" + fileName, currentIdx);
+        }
+
+        function step() {
+            if (currentIdx < words.length) {
+                updateDisplay();
+                currentIdx++;
+            } else {
+                stop();
+            }
+        }
+
+        function start() {
+            if (words.length === 0) return;
+            
+            if (isPlaying) {
+                stop();
+            } else {
+                const wpm = speedSlider.value;
+                const ms = 60000 / wpm;
+                timer = setInterval(step, ms);
+                isPlaying = true;
+                startBtn.textContent = "PAUSE";
+                startBtn.style.background = "#e67e22"; // Orange when playing
+            }
+        }
+
+        function stop() {
+            clearInterval(timer);
+            isPlaying = false;
+            startBtn.textContent = "RESUME";
+            startBtn.style.background = "#27ae60"; // Green when paused
+        }
+
+        startBtn.onclick = start;
+        
+        document.getElementById('reset').onclick = () => {
+            stop();
+            currentIdx = 0;
+            updateDisplay();
+            startBtn.textContent = "START";
+        };
+
+        speedSlider.oninput = function() {
+            wpmVal.innerText = this.value;
+            if (isPlaying) { 
+                stop(); 
+                start(); 
+            }
+        };
+
+        // Initial placeholder
+        foc.textContent = "-";
+    </script>
+</body>
+</html>
